@@ -319,7 +319,7 @@ async function renderHistory() {
   const wrap = document.getElementById('h');
   if (!historyCache.length) { wrap.innerHTML = '<div class="hint">No reviews yet. Run one from the Review tab.</div>'; return; }
   wrap.innerHTML = `<div class="hint" style="margin-bottom:10px">Click any row to open the full review.</div>
-    <table class="list"><thead><tr><th>Date</th><th>Client / Doc</th><th>Type</th><th>Risk</th><th>Findings</th><th>Status</th><th>By</th></tr></thead><tbody>
+    <table class="list"><thead><tr><th>Date</th><th>Client / Doc</th><th>Type</th><th>Risk</th><th>Findings</th><th>Status</th><th>By</th>${state.isAdmin ? '<th></th>' : ''}</tr></thead><tbody>
     ${historyCache.map((r) => {
       const risk = (r.overall_risk || 'medium').toLowerCase();
       const bcls = risk === 'high' ? 'b-high' : risk === 'low' ? 'b-low' : 'b-med';
@@ -327,9 +327,18 @@ async function renderHistory() {
         <td>${esc(r.document_type || '-')}</td><td><span class="badge ${bcls}" style="font-size:11px;padding:3px 9px">${risk.toUpperCase()}</span></td>
         <td>${Array.isArray(r.findings) ? r.findings.length : 0}</td>
         <td style="color:${r.status === 'decided' ? 'var(--ok)' : 'var(--muted)'}">${esc(r.status)}</td>
-        <td style="color:var(--muted)">${esc((r.created_by_email || '').split('@')[0])}</td></tr>`;
+        <td style="color:var(--muted)">${esc((r.created_by_email || '').split('@')[0])}</td>${state.isAdmin ? `<td style="text-align:right"><button class="ghost" data-del="${esc(r.id)}" style="padding:5px 12px">Delete</button></td>` : ''}</tr>`;
     }).join('')}</tbody></table>`;
   document.querySelectorAll('tr[data-id]').forEach((tr) => (tr.onclick = () => openHistoryDetail(tr.dataset.id)));
+  document.querySelectorAll('button[data-del]').forEach((b) => (b.onclick = (e) => { e.stopPropagation(); deleteReview(b.dataset.del); }));
+}
+
+async function deleteReview(id) {
+  if (!confirm('Delete this review permanently? This also removes any decisions logged from it.')) return;
+  await sb.from('rg_precedents').delete().eq('review_id', id);
+  const { error } = await sb.from('rg_reviews').delete().eq('id', id);
+  if (error) { alert('Could not delete: ' + error.message); return; }
+  renderHistory();
 }
 
 async function openHistoryDetail(id) {
@@ -353,6 +362,7 @@ function renderHistoryDetail(r, decisions) {
       <span style="font-weight:700;font-size:18px">${esc(r.client_name || r.doc_name || 'Review')}</span>
       <span class="badge ${bcls}">Overall risk: ${risk.toUpperCase()}</span>
       <button class="ghost" id="copyall" style="margin-left:auto">Copy full review</button>
+      ${state.isAdmin ? `<button class="ghost" id="deldetail">Delete</button>` : ''}
     </div>
     <div class="sub" style="margin:8px 0 2px;color:var(--muted)">${esc(r.document_type || 'Document')} · ${new Date(r.created_at).toLocaleString()} · ${esc((r.created_by_email || '').split('@')[0])} · ${esc(r.status || '')}</div>
     <p style="color:var(--muted);margin:10px 0 18px">${esc(r.summary || '')}</p>`;
@@ -379,6 +389,7 @@ function renderHistoryDetail(r, decisions) {
     b.textContent = 'Copied ✓'; b.classList.add('done'); setTimeout(() => { b.textContent = 'Copy'; b.classList.remove('done'); }, 1500);
   }));
   document.getElementById('copyall').onclick = () => copyAll(r, findings);
+  const dd = document.getElementById('deldetail'); if (dd) dd.onclick = () => deleteReview(r.id);
 }
 
 // ---------- admin ----------
