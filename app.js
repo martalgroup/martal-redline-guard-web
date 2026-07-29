@@ -309,23 +309,76 @@ function toBase64(file) {
 }
 
 // ---------- history ----------
+let historyCache = [];
 async function renderHistory() {
   shell(`<h2 style="margin-top:0">Review history</h2><div id="h">Loading...</div>`);
   const { data } = await sb.from('rg_reviews')
-    .select('id, created_at, doc_name, client_name, document_type, overall_risk, status, created_by_email, findings')
+    .select('id, created_at, doc_name, client_name, document_type, overall_risk, status, created_by_email, summary, findings')
     .order('created_at', { ascending: false }).limit(200);
+  historyCache = data || [];
   const wrap = document.getElementById('h');
-  if (!data?.length) { wrap.innerHTML = '<div class="hint">No reviews yet. Run one from the Review tab.</div>'; return; }
-  wrap.innerHTML = `<table class="list"><thead><tr><th>Date</th><th>Client / Doc</th><th>Type</th><th>Risk</th><th>Findings</th><th>Status</th><th>By</th></tr></thead><tbody>
-    ${data.map((r) => {
+  if (!historyCache.length) { wrap.innerHTML = '<div class="hint">No reviews yet. Run one from the Review tab.</div>'; return; }
+  wrap.innerHTML = `<div class="hint" style="margin-bottom:10px">Click any row to open the full review.</div>
+    <table class="list"><thead><tr><th>Date</th><th>Client / Doc</th><th>Type</th><th>Risk</th><th>Findings</th><th>Status</th><th>By</th></tr></thead><tbody>
+    ${historyCache.map((r) => {
       const risk = (r.overall_risk || 'medium').toLowerCase();
       const bcls = risk === 'high' ? 'b-high' : risk === 'low' ? 'b-low' : 'b-med';
-      return `<tr><td>${new Date(r.created_at).toLocaleDateString()}</td><td>${esc(r.client_name || r.doc_name || '-')}</td>
+      return `<tr data-id="${esc(r.id)}" style="cursor:pointer"><td>${new Date(r.created_at).toLocaleDateString()}</td><td>${esc(r.client_name || r.doc_name || '-')}</td>
         <td>${esc(r.document_type || '-')}</td><td><span class="badge ${bcls}" style="font-size:11px;padding:3px 9px">${risk.toUpperCase()}</span></td>
         <td>${Array.isArray(r.findings) ? r.findings.length : 0}</td>
         <td style="color:${r.status === 'decided' ? 'var(--ok)' : 'var(--muted)'}">${esc(r.status)}</td>
         <td style="color:var(--muted)">${esc((r.created_by_email || '').split('@')[0])}</td></tr>`;
     }).join('')}</tbody></table>`;
+  document.querySelectorAll('tr[data-id]').forEach((tr) => (tr.onclick = () => openHistoryDetail(tr.dataset.id)));
+}
+
+async function openHistoryDetail(id) {
+  const r = historyCache.find((x) => String(x.id) === String(id));
+  if (!r) return renderHistory();
+  let decisions = [];
+  try {
+    const { data } = await sb.from('rg_precedents').select('clause, final_decision, rationale').eq('review_id', id);
+    decisions = data || [];
+  } catch (_) {}
+  renderHistoryDetail(r, decisions);
+}
+
+function renderHistoryDetail(r, decisions) {
+  const risk = (r.overall_risk || 'medium').toLowerCase();
+  const bcls = risk === 'high' ? 'b-high' : risk === 'low' ? 'b-low' : 'b-med';
+  const findings = (r.findings || []).slice().sort((a, b) => (RISK_ORDER[a.risk] ?? 1) - (RISK_ORDER[b.risk] ?? 1));
+  const decMap = {}; decisions.forEach((d) => { if (d.clause) decMap[d.clause] = d; });
+  let html = `<a id="back" style="font-weight:600">&larr; Back to history</a>
+    <div style="margin-top:16px;display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      <span style="font-weight:700;font-size:18px">${esc(r.client_name || r.doc_name || 'Review')}</span>
+      <span class="badge ${bcls}">Overall risk: ${risk.toUpperCase()}</span>
+      <button class="ghost" id="copyall" style="margin-left:auto">Copy full review</button>
+    </div>
+    <div class="sub" style="margin:8px 0 2px;color:var(--muted)">${esc(r.document_type || 'Document')} · ${new Date(r.created_at).toLocaleString()} · ${esc((r.created_by_email || '').split('@')[0])} · ${esc(r.status || '')}</div>
+    <p style="color:var(--muted);margin:10px 0 18px">${esc(r.summary || '')}</p>`;
+  if (!findings.length) html += `<div class="hint">This review has no stored findings.</div>`;
+  findings.forEach((f, i) => {
+    const rk = (f.risk || 'caution').toLowerCase();
+    const d = decMap[f.clause];
+    html += `<div class="finding ${rk}">
+      <div class="fhead"><span class="clause">${esc(f.clause)}</span><span class="pill ${rk}">${rk}</span></div>
+      ${f.excerpt ? `<div class="excerpt">"${esc(f.excerpt)}"</div>` : ''}
+      <div class="field"><div class="label">Risk to Martal</div>${esc(f.issue)}</div>
+      <div class="field"><div class="label">Martal standard</div>${esc(f.martal_standard)}</div>
+      ${f.precedent_note ? `<div class="field"><div class="label">Precedent applied</div>${esc(f.precedent_note)}</div>` : ''}
+      <div class="field"><div class="label">Proposed response</div>
+        <div class="proposed"><button class="copy" data-i="${i}">Copy</button>${esc(f.proposed_response)}</div></div>
+      ${d?.final_decision ? `<div class="decide"><div class="label">Final call logged</div>
+        <span class="opt sel-${esc(d.final_decision)}">${esc(d.final_decision)}</span>${d.rationale ? `<span style="color:var(--muted);margin-left:10px">${esc(d.rationale)}</span>` : ''}</div>` : ''}
+    </div>`;
+  });
+  shell(`<div id="results">${html}</div>`);
+  document.getElementById('back').onclick = renderHistory;
+  document.querySelectorAll('.proposed .copy').forEach((b) => (b.onclick = () => {
+    navigator.clipboard.writeText(findings[+b.dataset.i].proposed_response || '');
+    b.textContent = 'Copied ✓'; b.classList.add('done'); setTimeout(() => { b.textContent = 'Copy'; b.classList.remove('done'); }, 1500);
+  }));
+  document.getElementById('copyall').onclick = () => copyAll(r, findings);
 }
 
 // ---------- admin ----------
