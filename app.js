@@ -11,6 +11,14 @@ const sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
 const app = document.getElementById('app');
 const esc = (s) => String(s ?? '').replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const RISK_ORDER = { high: 0, caution: 1, ok: 2 };
+const PRIO_ORDER = { red: 0, orange: 1, yellow: 2, green: 3 };
+const PRIO_LABEL = { red: 'Critical', orange: 'High', yellow: 'Suggested', green: 'Safe' };
+// priority of a finding; falls back to mapping the old 3-level risk for legacy reviews
+const prio = (f) => (f.priority || ({ high: 'red', caution: 'yellow', ok: 'green' }[f.risk]) || 'orange').toLowerCase();
+const legendHtml = (findings) => (findings && findings.length) ? `<div class="legend">
+    <span class="grp"><span class="dot p-red"></span><span class="dot p-orange"></span><b>Red &amp; Orange</b>: change these, top priority</span>
+    <span class="grp"><span class="dot p-yellow"></span><span class="dot p-green"></span><b>Yellow &amp; Green</b>: suggested but safe</span>
+  </div>` : '';
 let state = { user: null, isAdmin: false, view: 'review' };
 
 // ---------- boot ----------
@@ -190,7 +198,7 @@ async function runReview() {
 function setStatus(s) { const el = document.getElementById('status'); if (el) el.innerHTML = s ? `<span class="spinner"></span>${esc(s)}` : ''; }
 const run = () => document.getElementById('run');
 
-function sortedFindings() { return (R.result?.findings || []).slice().sort((a, b) => (RISK_ORDER[a.risk] ?? 1) - (RISK_ORDER[b.risk] ?? 1)); }
+function sortedFindings() { return (R.result?.findings || []).slice().sort((a, b) => (PRIO_ORDER[prio(a)] ?? 1) - (PRIO_ORDER[prio(b)] ?? 1)); }
 
 function paintResults() {
   const r = R.result, risk = (r.overall_risk || 'medium').toLowerCase();
@@ -203,11 +211,12 @@ function paintResults() {
       <button class="ghost" id="copyall" style="margin-left:auto">Copy full review</button>
     </div>
     <p style="color:var(--muted);margin:8px 0 6px">${esc(r.summary || '')}</p>
-    <div class="hint" style="margin-bottom:18px">${typeof r._meta?.precedentsUsed === 'number' ? r._meta.precedentsUsed + ' precedent(s) informed this review.' : ''}</div>`;
+    <div class="hint" style="margin-bottom:12px">${typeof r._meta?.precedentsUsed === 'number' ? r._meta.precedentsUsed + ' precedent(s) informed this review.' : ''}</div>
+    ${legendHtml(findings)}`;
   findings.forEach((f, i) => {
-    const rk = (f.risk || 'caution').toLowerCase();
-    html += `<div class="finding ${rk}">
-      <div class="fhead"><span class="clause">${esc(f.clause)}</span><span class="pill ${rk}">${rk}</span></div>
+    const p = prio(f);
+    html += `<div class="finding p-${p}">
+      <div class="fhead"><span class="clause">${esc(f.clause)}</span><span class="pill p-${p}">${PRIO_LABEL[p] || p}</span></div>
       ${f.excerpt ? `<div class="excerpt">"${esc(f.excerpt)}"</div>` : ''}
       <div class="field"><div class="label">Risk to Martal</div>${esc(f.issue)}</div>
       <div class="field"><div class="label">Martal standard</div>${esc(f.martal_standard)}</div>
@@ -248,7 +257,7 @@ async function saveDecisions(findings) {
   const rows = findings.map((f, i) => {
     const d = R.decisions[i]; if (!d?.final_decision) return null;
     return { review_id: R.reviewId, created_by_email: state.user.email, clause_type: f.clause_type || 'other',
-      clause: f.clause, change_summary: f.excerpt || f.issue, ai_risk: f.risk, human_risk: f.risk,
+      clause: f.clause, change_summary: f.excerpt || f.issue, ai_risk: prio(f), human_risk: prio(f),
       final_decision: d.final_decision, rationale: d.rationale || '', proposed_response: f.proposed_response || '' };
   }).filter(Boolean);
   const msg = document.getElementById('savemsg');
@@ -262,7 +271,7 @@ async function saveDecisions(findings) {
 function copyAll(r, findings) {
   let md = `# Redline review - ${r.document_type || 'Document'}\n**Overall risk: ${(r.overall_risk || '').toUpperCase()}**\n\n${r.summary || ''}\n\n`;
   findings.forEach((f) => {
-    md += `## ${f.clause} - [${(f.risk || '').toUpperCase()}]\n`;
+    md += `## ${f.clause} - [${prio(f).toUpperCase()}]\n`;
     if (f.excerpt) md += `> "${f.excerpt}"\n\n`;
     md += `**Risk:** ${f.issue}\n\n**Martal standard:** ${f.martal_standard}\n\n**Proposed response:** ${f.proposed_response}\n\n`;
   });
@@ -355,7 +364,7 @@ async function openHistoryDetail(id) {
 function renderHistoryDetail(r, decisions) {
   const risk = (r.overall_risk || 'medium').toLowerCase();
   const bcls = risk === 'high' ? 'b-high' : risk === 'low' ? 'b-low' : 'b-med';
-  const findings = (r.findings || []).slice().sort((a, b) => (RISK_ORDER[a.risk] ?? 1) - (RISK_ORDER[b.risk] ?? 1));
+  const findings = (r.findings || []).slice().sort((a, b) => (PRIO_ORDER[prio(a)] ?? 1) - (PRIO_ORDER[prio(b)] ?? 1));
   const decMap = {}; decisions.forEach((d) => { if (d.clause) decMap[d.clause] = d; });
   let html = `<a id="back" style="font-weight:600">&larr; Back to history</a>
     <div style="margin-top:16px;display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
@@ -367,11 +376,12 @@ function renderHistoryDetail(r, decisions) {
     <div class="sub" style="margin:8px 0 2px;color:var(--muted)">${esc(r.document_type || 'Document')} · ${new Date(r.created_at).toLocaleString()} · ${esc((r.created_by_email || '').split('@')[0])} · ${esc(r.status || '')}</div>
     <p style="color:var(--muted);margin:10px 0 18px">${esc(r.summary || '')}</p>`;
   if (!findings.length) html += `<div class="hint">This review has no stored findings.</div>`;
+  html += legendHtml(findings);
   findings.forEach((f, i) => {
-    const rk = (f.risk || 'caution').toLowerCase();
+    const p = prio(f);
     const d = decMap[f.clause];
-    html += `<div class="finding ${rk}">
-      <div class="fhead"><span class="clause">${esc(f.clause)}</span><span class="pill ${rk}">${rk}</span></div>
+    html += `<div class="finding p-${p}">
+      <div class="fhead"><span class="clause">${esc(f.clause)}</span><span class="pill p-${p}">${PRIO_LABEL[p] || p}</span></div>
       ${f.excerpt ? `<div class="excerpt">"${esc(f.excerpt)}"</div>` : ''}
       <div class="field"><div class="label">Risk to Martal</div>${esc(f.issue)}</div>
       <div class="field"><div class="label">Martal standard</div>${esc(f.martal_standard)}</div>
